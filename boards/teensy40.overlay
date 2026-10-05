@@ -1,0 +1,10 @@
+&lpi2c1 {
+    status = "okay";
+    clock-frequency = <100000>;
+
+    mpu6050@68 {
+        compatible = "invensense,mpu6050";
+        reg = <0x68>;
+        status = "okay";
+    };
+};

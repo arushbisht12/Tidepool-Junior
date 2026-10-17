@@ -468,7 +468,7 @@ void control_entry(void *p1, void *p2, void *p3) {
 		control_cmd cmd = {0};
 		double error = 1.0 - current_state.state.position[0];
 		double output = 0.5 * error;
-		if (output <= 1.0 && output >= 1.0) {
+		if (output <= 1.0 && output >= -1.0 && enable_control) {
 			cmd.output = output;
 		} else {
 			if (reason == 0) {reason = OUTPUT_OUTSIDE_BOUNDS;}
@@ -596,14 +596,16 @@ int main(void)
 
 	run_tests();
 
-	context initial_context = {
+	// initialization
+
+	context supervisor_context = {
 		.mode = INITIALIZING,
 		.allow_control = false,
-		.fault = 0,
+		.fault = FAULT_NONE,
 		.pub_timestamp_ms = k_uptime_get(),
 	};
 
-	int ret = state_publish(&context_chan, &initial_context, sizeof(initial_context));
+	int ret = state_publish(&context_chan, &supervisor_context, sizeof(supervisor_context));
 	if (ret != 0) {
 		printk("Initial context publication failed: %d\n", ret);
 		/* Handle startup failure; do not release workers yet. */
@@ -611,6 +613,124 @@ int main(void)
 		k_sem_give(&startup_gate);
 		k_sem_give(&startup_gate);
 	}
+
+	periodic_schedule schedule = {
+		.period_ms = supervisor_period_ms,
+		.next_release_ms = k_uptime_get(),
+	};
+
+	// loop
+
+	int supervisor_context_pub_failures = 0;
+
+	while (true) {
+
+
+		// state listener
+
+		state_msg observed_state = {0};
+		bool received_state = false;
+
+		int state_ret = state_snapshot(
+			&state_chan,
+			&observed_state,
+			sizeof(observed_state),
+			&received_state);
+
+		int64_t now_ms = k_uptime_get();
+
+		if (state_ret != 0) {
+			printk("State snapshot failed: %d\n", state_ret);
+		} else if (!received_state) {
+			printk("State: not published yet\n");
+		} else {
+			int64_t age_ms = now_ms - observed_state.source_sample_timestamp_ms;
+
+			printk("State seq=%" PRIu32 " age=%" PRId64 " ms valid=%d\n",
+				observed_state.sequence,
+				age_ms,
+				(int)observed_state.valid);
+		}
+
+		// control cmd listener
+
+		control_cmd cmd = {0};
+		bool received_cmd = false;
+
+		int cmd_ret = state_snapshot(
+			&control_cmd_chan,
+			&cmd,
+			sizeof(cmd),
+			&received_cmd);
+
+		now_ms = k_uptime_get();
+
+		if (cmd_ret != 0) {
+			printk("Control command snapshot failed: %d\n", cmd_ret);
+		} else if (!received_state) {
+			printk("Control command: not published yet\n");
+		} else {
+			int64_t age_ms = now_ms - cmd.pub_timestamp_ms;
+
+			printk("Control output= %lf, age=%" PRId64 " ms,  enabled=%d\n",
+				cmd.output,
+				age_ms,
+				(int)cmd.enabled);
+		}
+
+
+		// control status listener
+
+		control_status status = {0};
+		bool received_status = false;
+
+		int status_ret = state_snapshot(
+			&control_status_chan,
+			&status,
+			sizeof(status),
+			&received_status);
+
+		now_ms = k_uptime_get();
+
+		if (status_ret != 0) {
+			printk("Control status snapshot failed: %d\n", status_ret);
+		} else if (!received_status) {
+			printk("Control status: not published yet\n");
+		} else {
+			int64_t age_ms = now_ms - status.pub_timestamp_ms;
+
+			printk("Control status type= %d, Reaon= %d, age=%" PRId64 " ms\n",
+				status.status,
+				status.reason, 
+				age_ms);
+		}
+
+
+	// enum control_status_type status;
+	// enum reason_type reason;
+	// int64_t pub_timestamp_ms;
+
+
+		supervisor_context.pub_timestamp_ms = k_uptime_get();
+
+		int context_ret = state_publish(
+			&context_chan,
+			&supervisor_context,
+			sizeof(supervisor_context));
+		if (context_ret != 0) {
+			supervisor_context_pub_failures++;
+		}
+
+
+		int ret = periodic_advance(&schedule, k_uptime_get());
+		if (ret != 0) {
+			printf("Scheduler not initialized: %d\n", ret);
+		}
+
+		k_sleep(K_TIMEOUT_ABS_MS(schedule.next_release_ms));
+	}
+
+
 
 
 	// state_msg sample = {0};
@@ -639,10 +759,4 @@ int main(void)
 	// enum freshness_result result = check_freshness(received, latest.valid, latest.source_sample_timestamp_ms, now_ms, STATE_AGE_LIMIT_MS);
 
 	// printf("received: %d \n sequence #: %d", received, latest.sequence);
-
-
-
-
-
-	return 0; /* Replace with your supervisor loop in TODO 8. */
 }

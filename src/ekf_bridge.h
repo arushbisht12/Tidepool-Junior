@@ -5,7 +5,7 @@
 extern "C" {
 #endif
 
-int ekf_init(void);
+// int ekf_init(void);
 
 int ekf_step(const double accel[3], 
     double dt_seconds, 

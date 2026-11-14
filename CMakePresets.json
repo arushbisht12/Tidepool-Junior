@@ -1,0 +1,36 @@
+{
+  "version": 10,
+  "$comment": "Static presets",
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+        "CONF_FILE": "${sourceDir}/prj.conf"
+      }
+    },
+    {
+      "name": "qemu",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/../build/qemu",
+      "cacheVariables": {
+        "BOARD": "qemu_cortex_m3"
+      }
+    },
+    {
+      "name": "board",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/../build/junior",
+      "cacheVariables": {
+        "BOARD": "teensy40"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "qemu", "configurePreset": "qemu" },
+    { "name": "board", "configurePreset": "board" }
+  ]
+}
+

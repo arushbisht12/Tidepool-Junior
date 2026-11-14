@@ -1,9 +1,12 @@
+#include <stdint.h>
 #include <zephyr/kernel.h>
 #include <stdbool.h>
 #include <stddef.h>  /* size_t */
 #include <string.h>  /* memcpy */
 #include <errno.h>   /* EINVAL */
 #include <inttypes.h>
+#include "ekf_bridge.h"
+#include <math.h>
 
 /*
  * Three-thread C learning scaffold: YOU implement the TODOs.
@@ -334,6 +337,8 @@ void estimation_entry(void *p1, void *p2, void *p3) {
 		return;
 	}
 
+	ekf_init();
+
 	periodic_schedule schedule = {
 		.period_ms = estimation_period_ms,
 		.next_release_ms = k_uptime_get(),
@@ -341,6 +346,9 @@ void estimation_entry(void *p1, void *p2, void *p3) {
 
 	uint32_t state_pub_failures = 0;
 	uint32_t sequence = 0; 
+
+	bool have_prev_sample = false;
+	uint32_t prev_sample_timestamp_ms = 0;
 
 	while (true) {
 		// generate deterministic fake IMU. 
@@ -352,10 +360,20 @@ void estimation_entry(void *p1, void *p2, void *p3) {
 
 		// calculate state
 		state_msg next_state = {0};
-		next_state.state.position[0] = data.accel[0] * 0.5 * 0.2 * 0.2; // TODO: add filter
+
+		if (!have_prev_sample) {
+			have_prev_sample = true;
+		} else {
+			double dt_s = (data.sample_timestamp_ms - prev_sample_timestamp_ms)/ 1000.0;
+			ekf_step(data.accel, dt_s, next_state.state.position);
+		}
+
+		//next_state.state.position[0] = data.accel[0] * 0.5 * 0.2 * 0.2; 
 		next_state.sequence = ++sequence; // increments sequence, then grabs value
 		next_state.valid = true;
 		next_state.source_sample_timestamp_ms = data.sample_timestamp_ms;
+
+		prev_sample_timestamp_ms = data.sample_timestamp_ms;
 
 		int ret = state_publish(&state_chan, &next_state, sizeof(next_state));
 		if (ret != 0) {
@@ -467,7 +485,7 @@ void control_entry(void *p1, void *p2, void *p3) {
 
 		control_cmd cmd = {0};
 		double error = 1.0 - current_state.state.position[0];
-		double output = 0.5 * error;
+		double output = 0.01 * error;
 		if (output <= 1.0 && output >= -1.0 && enable_control) {
 			cmd.output = output;
 		} else {
@@ -565,9 +583,34 @@ static void test_periodic_advance(void) {
 	__ASSERT(schedule.next_release_ms == 1160, "Next release should skip two");
 }
 
+static void test_ekf_bridge(void) {
+	double accel[3] = {2.0, 0.0, 0.0};
+	double position[3] = {0};
+	double dt_seconds = 0.1;
+
+	int ret = ekf_step(accel, dt_seconds, position);
+	__ASSERT(ret==-EACCES, "Needs to be initialized before");
+
+	ekf_init();
+	
+	ret = ekf_step(accel, -0.1, position);
+	__ASSERT(ret=-EINVAL, "Negative dt");
+	ret = ekf_step(NULL, dt_seconds, NULL);
+	__ASSERT(ret=-EINVAL, "Null argument pointers");
+	ret = ekf_step(accel, dt_seconds, position);
+	__ASSERT(fabs(position[0] - 0.01) < 1e-9, "X should be 0.01");
+	ekf_step(accel, dt_seconds, position);
+	__ASSERT(fabs(position[0] - 0.02) < 1e-9, "X should be 0.02");
+
+	ekf_init();
+	ekf_get(position);
+	__ASSERT(position[0]==0, "Reset to 0 failed");
+}
+
 static void run_tests(void) {
 	test_freshness();
 	test_periodic_advance();
+	test_ekf_bridge();
 
 	printk("All tests passed successfully.\n");
 }
@@ -667,11 +710,10 @@ int main(void)
 
 		if (cmd_ret != 0) {
 			printk("Control command snapshot failed: %d\n", cmd_ret);
-		} else if (!received_state) {
+		} else if (!received_cmd) {
 			printk("Control command: not published yet\n");
 		} else {
 			int64_t age_ms = now_ms - cmd.pub_timestamp_ms;
-
 			printk("Control output= %lf, age=%" PRId64 " ms,  enabled=%d\n",
 				cmd.output,
 				age_ms,
@@ -705,13 +747,9 @@ int main(void)
 				age_ms);
 		}
 
-
-	// enum control_status_type status;
-	// enum reason_type reason;
-	// int64_t pub_timestamp_ms;
-
-
 		supervisor_context.pub_timestamp_ms = k_uptime_get();
+		supervisor_context.mode = READY;
+		supervisor_context.allow_control = true;
 
 		int context_ret = state_publish(
 			&context_chan,
